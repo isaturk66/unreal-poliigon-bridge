@@ -65,6 +65,7 @@ namespace
 	const FName PARAM_OPACITY(TEXT("Opacity Map"));
 	const FName PARAM_DISPLACEMENT(TEXT("Displacement Map"));
 	const FName PARAM_MACRO_MAP(TEXT("Macro Variation Map"));
+	const FName PARAM_TRANSMISSION(TEXT("Transmission Map"));
 	const FName SWITCH_USE_ORM(TEXT("Use ORM"));
 	const FName SWITCH_INVERT_ROUGH(TEXT("Invert Roughness (Gloss)"));
 	const FName SWITCH_HAS_METALLIC(TEXT("Has Metallic"));
@@ -72,6 +73,7 @@ namespace
 	const FName SWITCH_HAS_EMISSION(TEXT("Has Emission"));
 	const FName SWITCH_HAS_OPACITY(TEXT("Has Opacity"));
 	const FName SWITCH_HAS_DISPLACEMENT(TEXT("Has Displacement"));
+	const FName SWITCH_HAS_TRANSMISSION(TEXT("Has Transmission"));
 	const FName SWITCH_WORLD_UV(TEXT("Use World Aligned UVs"));
 	const FName SWITCH_TRIPLANAR(TEXT("Use Triplanar"));
 	const FName SWITCH_MACRO(TEXT("Use Macro Variation"));
@@ -645,6 +647,21 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 	ConstHalf->R = 0.5f;
 	auto* Displacement = MakeSwitch(SWITCH_HAS_DISPLACEMENT, -600, 1440, DispAdj, ConstHalf);
 
+	// ---- Transmission (glass/liquids): translucent opacity = 1 - transmission.
+	// Instances with a transmission map get BLEND_Translucent via BasePropertyOverrides.
+	UTexture2D* BlackGray = GetOrCreateSolidTexture(
+		TEXT("T_PoliigonDefault_Black"), CorePath, TC_Grayscale, false, FColor::Black);
+	SavePackageFor(BlackGray);
+	auto* TransTex = MakeTexParam(PARAM_TRANSMISSION, SAMPLERTYPE_LinearGrayscale, BlackGray, 1700);
+	auto* TransIntensity = MakeScalar(TEXT("Transmission Intensity"), 1.0f, -1050, 1850);
+	auto* TransMul = NewExpression<UMaterialExpressionMultiply>(Material, -900, 1780);
+	Wire(TransTex, TransMul->A);
+	Wire(TransIntensity, TransMul->B);
+	auto* OneMinusTrans = NewExpression<UMaterialExpressionOneMinus>(Material, -780, 1780);
+	Wire(TransMul, OneMinusTrans->Input);
+	auto* OpacityValue = MakeSwitch(SWITCH_HAS_TRANSMISSION, -600, 1740, OneMinusTrans, Const1);
+	Material->TranslucencyLightingMode = TLM_SurfacePerPixelLighting;
+
 	// --- Try an explicit Substrate slab first ---------------------------------
 	bool bSubstrateWired = false;
 	if (UClass* SlabClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.MaterialExpressionSubstrateSlabBSDF")))
@@ -704,6 +721,9 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 	// Nanite displacement pin (both paths). Harmless if tessellation is off; enable
 	// Tessellation on this material + Nanite meshes to see real displacement.
 	ELib::ConnectMaterialProperty(Displacement, TEXT(""), MP_Displacement);
+
+	// Translucent opacity (both paths); only used by instances overridden to BLEND_Translucent.
+	ELib::ConnectMaterialProperty(OpacityValue, TEXT(""), MP_Opacity);
 
 	return true;
 }
@@ -875,6 +895,7 @@ UMaterialInstanceConstant* FPoliigonIngest::CreateInstanceForSet(
 	SetTex(PARAM_EMISSION, EPoliigonMapSlot::Emission);
 	SetTex(PARAM_OPACITY, EPoliigonMapSlot::Opacity);
 	SetTex(PARAM_DISPLACEMENT, EPoliigonMapSlot::Displacement);
+	SetTex(PARAM_TRANSMISSION, EPoliigonMapSlot::Transmission);
 
 	// Roughness slot: a real roughness map, or a gloss map + invert switch.
 	const bool bHasORM = Textures.Contains(EPoliigonMapSlot::ORM);
@@ -902,8 +923,15 @@ UMaterialInstanceConstant* FPoliigonIngest::CreateInstanceForSet(
 	SetSwitch(SWITCH_HAS_EMISSION, Textures.Contains(EPoliigonMapSlot::Emission));
 	SetSwitch(SWITCH_HAS_OPACITY, Textures.Contains(EPoliigonMapSlot::Opacity));
 	SetSwitch(SWITCH_HAS_DISPLACEMENT, Textures.Contains(EPoliigonMapSlot::Displacement));
+	SetSwitch(SWITCH_HAS_TRANSMISSION, Textures.Contains(EPoliigonMapSlot::Transmission));
 
-	if (Textures.Contains(EPoliigonMapSlot::Opacity))
+	if (Textures.Contains(EPoliigonMapSlot::Transmission))
+	{
+		// Glass/liquid: translucent wins over masked.
+		Instance->BasePropertyOverrides.bOverride_BlendMode = true;
+		Instance->BasePropertyOverrides.BlendMode = BLEND_Translucent;
+	}
+	else if (Textures.Contains(EPoliigonMapSlot::Opacity))
 	{
 		Instance->BasePropertyOverrides.bOverride_BlendMode = true;
 		Instance->BasePropertyOverrides.BlendMode = BLEND_Masked;

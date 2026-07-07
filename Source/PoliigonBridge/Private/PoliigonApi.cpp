@@ -809,6 +809,7 @@ void FPoliigonApi::GetDownloadFiles(const FPoliigonAssetInfo& Info, const FStrin
 		}
 		if (const FPoliigonMapDesc* D = FindMap(TEXT("Emission"))) { Wanted.Add(D); }
 		if (const FPoliigonMapDesc* D = FindMap(TEXT("Opacity"))) { Wanted.Add(D); }
+		if (const FPoliigonMapDesc* D = FindMap(TEXT("Transmission"))) { Wanted.Add(D); }
 		if (bIncludeDisplacement)
 		{
 			if (const FPoliigonMapDesc* D = FindMap(TEXT("Displacement"))) { Wanted.Add(D); }
@@ -855,6 +856,7 @@ void FPoliigonApi::GetDownloadFiles(const FPoliigonAssetInfo& Info, const FStrin
 			if (Has(TEXT("EMISSION"))) { Selected.Add(TEXT("EMISSION")); }
 			else if (Has(TEXT("EMISSIVE"))) { Selected.Add(TEXT("EMISSIVE")); }
 			if (Has(TEXT("MASK"))) { Selected.Add(TEXT("MASK")); }
+			if (Has(TEXT("TRANSMISSION"))) { Selected.Add(TEXT("TRANSMISSION")); }
 			if (bIncludeDisplacement)
 			{
 				if (Has(TEXT("DISP"))) { Selected.Add(TEXT("DISP")); }
