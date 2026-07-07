@@ -32,6 +32,12 @@
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionNormalize.h"
+#include "Materials/MaterialExpressionMaterialFunctionCall.h"
+#include "Materials/MaterialExpressionFunctionInput.h"
+#include "Materials/MaterialExpressionTextureObjectParameter.h"
+#include "Materials/MaterialExpressionTransform.h"
+#include "Materials/MaterialFunction.h"
+#include "Materials/MaterialFunctionInterface.h"
 #include "Engine/Texture2D.h"
 #include "Engine/StaticMesh.h"
 #include "SceneTypes.h"
@@ -67,6 +73,7 @@ namespace
 	const FName SWITCH_HAS_OPACITY(TEXT("Has Opacity"));
 	const FName SWITCH_HAS_DISPLACEMENT(TEXT("Has Displacement"));
 	const FName SWITCH_WORLD_UV(TEXT("Use World Aligned UVs"));
+	const FName SWITCH_TRIPLANAR(TEXT("Use Triplanar"));
 	const FName SWITCH_MACRO(TEXT("Use Macro Variation"));
 
 	const TCHAR* MASTER_NAME = TEXT("M_PoliigonMaster");
@@ -394,10 +401,127 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 	auto* Const1 = NewExpression<UMaterialExpressionConstant>(Material, -1000, 1380);
 	Const1->R = 1.0f;
 
+	// ---- Triplanar option: engine WorldAlignedTexture/Normal functions, per-pixel
+	// projection on all axes. Works on any geometry, costs 3x samples when enabled.
+	auto* TriSize = MakeScalar(TEXT("Triplanar Tile Size (cm)"), 100.0f, -1500, 1700);
+	auto* TriSizeXY = NewExpression<UMaterialExpressionAppendVector>(Material, -1350, 1700);
+	Wire(TriSize, TriSizeXY->A);
+	Wire(TriSize, TriSizeXY->B);
+	auto* TriSizeXYZ = NewExpression<UMaterialExpressionAppendVector>(Material, -1230, 1700);
+	Wire(TriSizeXY, TriSizeXYZ->A);
+	Wire(TriSize, TriSizeXYZ->B);
+
+	UMaterialFunctionInterface* FuncWAT = LoadObject<UMaterialFunction>(nullptr,
+		TEXT("/Engine/Functions/Engine_MaterialFunctions01/Texturing/WorldAlignedTexture.WorldAlignedTexture"));
+	UMaterialFunctionInterface* FuncWAN = LoadObject<UMaterialFunction>(nullptr,
+		TEXT("/Engine/Functions/Engine_MaterialFunctions01/Texturing/WorldAlignedNormal.WorldAlignedNormal"));
+	if (!FuncWAT || !FuncWAN)
+	{
+		UE_LOG(LogPoliigonIngest, Warning,
+			TEXT("WorldAlignedTexture/Normal engine functions not found; triplanar switch will pass through."));
+	}
+
+	auto FindOutput = [](UMaterialExpressionMaterialFunctionCall* Call, const TCHAR* Keyword) -> int32
+	{
+		for (int32 i = 0; i < Call->FunctionOutputs.Num(); ++i)
+		{
+			if (Call->FunctionOutputs[i].Output.OutputName.ToString().Contains(Keyword))
+			{
+				return i;
+			}
+		}
+		return FMath::Max(Call->FunctionOutputs.Num() - 1, 0);
+	};
+
+	auto MakeTriplanarCall = [&](const FName& ParamName, UTexture* Default, UMaterialFunctionInterface* Func,
+		int32 Y) -> UMaterialExpressionMaterialFunctionCall*
+	{
+		if (!Func)
+		{
+			return nullptr;
+		}
+		auto* TexObj = NewExpression<UMaterialExpressionTextureObjectParameter>(Material, -1500, Y);
+		TexObj->ParameterName = ParamName; // same name as the UV sampler: one texture param per map
+		if (Default)
+		{
+			TexObj->Texture = Default;
+		}
+		auto* Call = NewExpression<UMaterialExpressionMaterialFunctionCall>(Material, -1300, Y);
+		if (!Call || !Call->SetMaterialFunction(Func))
+		{
+			return nullptr;
+		}
+		for (FFunctionExpressionInput& FuncInput : Call->FunctionInputs)
+		{
+			const FString InputName = FuncInput.ExpressionInput
+				? FuncInput.ExpressionInput->InputName.ToString() : FString();
+			if (InputName.Contains(TEXT("Size")))
+			{
+				FuncInput.Input.Connect(0, TriSizeXYZ);
+			}
+			else if (InputName.Contains(TEXT("Texture")) || InputName.Contains(TEXT("Object")))
+			{
+				FuncInput.Input.Connect(0, TexObj);
+			}
+		}
+		return Call;
+	};
+
+	auto MakeTriSwitch = [&](UMaterialExpression* TriSource, int32 TriOutputIndex, UMaterialExpression* UVFallback,
+		int32 X, int32 Y) -> UMaterialExpression*
+	{
+		if (!TriSource)
+		{
+			return UVFallback;
+		}
+		auto* Switch = NewExpression<UMaterialExpressionStaticSwitchParameter>(Material, X, Y);
+		Switch->ParameterName = SWITCH_TRIPLANAR;
+		Switch->DefaultValue = false;
+		Switch->A.Connect(TriOutputIndex, TriSource);
+		Wire(UVFallback, Switch->B);
+		return Switch;
+	};
+
+	UMaterialExpression* BCVal = BaseColorTex;
+	if (auto* CallBC = MakeTriplanarCall(PARAM_BASECOLOR, WhiteTex, FuncWAT, 1800))
+	{
+		BCVal = MakeTriSwitch(CallBC, FindOutput(CallBC, TEXT("XYZ")), BaseColorTex, -1150, 1800);
+	}
+	UMaterialExpression* OrmVal = OrmTex;
+	if (auto* CallORM = MakeTriplanarCall(PARAM_ORM, WhiteMasks, FuncWAT, 1900))
+	{
+		OrmVal = MakeTriSwitch(CallORM, FindOutput(CallORM, TEXT("XYZ")), OrmTex, -1150, 1900);
+	}
+	UMaterialExpression* RoughVal = RoughTex;
+	if (auto* CallRough = MakeTriplanarCall(PARAM_ROUGHNESS, WhiteGray, FuncWAT, 2000))
+	{
+		RoughVal = MakeTriSwitch(CallRough, FindOutput(CallRough, TEXT("XYZ")), RoughTex, -1150, 2000);
+	}
+	UMaterialExpression* MetalVal = MetalTex;
+	if (auto* CallMetal = MakeTriplanarCall(PARAM_METALLIC, WhiteGray, FuncWAT, 2100))
+	{
+		MetalVal = MakeTriSwitch(CallMetal, FindOutput(CallMetal, TEXT("XYZ")), MetalTex, -1150, 2100);
+	}
+	UMaterialExpression* AOVal = AOTex;
+	if (auto* CallAO = MakeTriplanarCall(PARAM_AO, WhiteGray, FuncWAT, 2200))
+	{
+		AOVal = MakeTriSwitch(CallAO, FindOutput(CallAO, TEXT("XYZ")), AOTex, -1150, 2200);
+	}
+	// Normal: WorldAlignedNormal outputs a world-space normal; bring it back to tangent space.
+	UMaterialExpression* NVal = NormalTex;
+	if (auto* CallN = MakeTriplanarCall(PARAM_NORMAL, NormalTexDefault, FuncWAN, 2300))
+	{
+		auto* ToTangent = NewExpression<UMaterialExpressionTransform>(Material, -1150, 2300);
+		ToTangent->TransformSourceType = TRANSFORMSOURCE_World;
+		ToTangent->TransformType = TRANSFORM_Tangent;
+		ToTangent->Input.Connect(FindOutput(CallN, TEXT("XYZ")), CallN);
+		NVal = MakeTriSwitch(ToTangent, 0, NormalTex, -1000, 2300);
+	}
+
 	// ---- Base color grade: desaturate -> contrast -> tint (+ optional macro variation)
 	auto* DesatAmount = MakeScalar(TEXT("Desaturation"), 0.0f, -1050, -430);
 	auto* Desat = NewExpression<UMaterialExpressionDesaturation>(Material, -900, -360);
-	Wire(BaseColorTex, Desat->Input);
+	Wire(BCVal, Desat->Input);
 	Wire(DesatAmount, Desat->Fraction);
 	auto* ContrastParam = MakeScalar(TEXT("Contrast"), 1.0f, -900, -230);
 	auto* ContrastPow = NewExpression<UMaterialExpressionPower>(Material, -750, -330);
@@ -450,18 +574,18 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 	FlatNormal->Constant = FLinearColor(0.0f, 0.0f, 1.0f);
 	auto* NormalLerp = NewExpression<UMaterialExpressionLinearInterpolate>(Material, -880, -90);
 	Wire(FlatNormal, NormalLerp->A);
-	Wire(NormalTex, NormalLerp->B);
+	Wire(NVal, NormalLerp->B);
 	Wire(NormalStrength, NormalLerp->Alpha);
 	auto* NormalFinal = NewExpression<UMaterialExpressionNormalize>(Material, -720, -90);
 	Wire(NormalLerp, NormalFinal->VectorInput);
 
 	// Roughness = UseORM ? ORM.G : (Invert ? 1-Rough : Rough)
 	auto* OneMinusRough = NewExpression<UMaterialExpressionOneMinus>(Material, -1000, 300);
-	Wire(RoughTex, OneMinusRough->Input);
-	auto* SwInvertRough = MakeSwitch(SWITCH_INVERT_ROUGH, -800, 300, OneMinusRough, RoughTex);
+	Wire(RoughVal, OneMinusRough->Input);
+	auto* SwInvertRough = MakeSwitch(SWITCH_INVERT_ROUGH, -800, 300, OneMinusRough, RoughVal);
 	auto* OrmG = NewExpression<UMaterialExpressionComponentMask>(Material, -1000, 150);
 	OrmG->R = 0; OrmG->G = 1; OrmG->B = 0; OrmG->A = 0;
-	Wire(OrmTex, OrmG->Input);
+	Wire(OrmVal, OrmG->Input);
 	auto* Roughness = MakeSwitch(SWITCH_USE_ORM, -600, 250, OrmG, SwInvertRough);
 
 	// Roughness remap: lerp(Min, Max, roughness) — defaults are passthrough.
@@ -473,17 +597,17 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 	Wire(Roughness, RoughFinal->Alpha);
 
 	// Metallic = UseORM ? ORM.B : (HasMetallic ? Metal : 0)
-	auto* SwHasMetal = MakeSwitch(SWITCH_HAS_METALLIC, -800, 500, MetalTex, Const0);
+	auto* SwHasMetal = MakeSwitch(SWITCH_HAS_METALLIC, -800, 500, MetalVal, Const0);
 	auto* OrmB = NewExpression<UMaterialExpressionComponentMask>(Material, -1000, 550);
 	OrmB->R = 0; OrmB->G = 0; OrmB->B = 1; OrmB->A = 0;
-	Wire(OrmTex, OrmB->Input);
+	Wire(OrmVal, OrmB->Input);
 	auto* Metallic = MakeSwitch(SWITCH_USE_ORM, -600, 500, OrmB, SwHasMetal);
 
 	// AO = UseORM ? ORM.R : (HasAO ? AO : 1)
-	auto* SwHasAO = MakeSwitch(SWITCH_HAS_AO, -800, 700, AOTex, Const1);
+	auto* SwHasAO = MakeSwitch(SWITCH_HAS_AO, -800, 700, AOVal, Const1);
 	auto* OrmR = NewExpression<UMaterialExpressionComponentMask>(Material, -1000, 750);
 	OrmR->R = 1; OrmR->G = 0; OrmR->B = 0; OrmR->A = 0;
-	Wire(OrmTex, OrmR->Input);
+	Wire(OrmVal, OrmR->Input);
 	auto* AO = MakeSwitch(SWITCH_USE_ORM, -600, 700, OrmR, SwHasAO);
 
 	// AO intensity: lerp(1, AO, intensity)
