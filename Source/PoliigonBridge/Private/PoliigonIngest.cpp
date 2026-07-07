@@ -58,6 +58,7 @@ namespace
 	const FName PARAM_EMISSION(TEXT("Emission Map"));
 	const FName PARAM_OPACITY(TEXT("Opacity Map"));
 	const FName PARAM_DISPLACEMENT(TEXT("Displacement Map"));
+	const FName PARAM_MACRO_MAP(TEXT("Macro Variation Map"));
 	const FName SWITCH_USE_ORM(TEXT("Use ORM"));
 	const FName SWITCH_INVERT_ROUGH(TEXT("Invert Roughness (Gloss)"));
 	const FName SWITCH_HAS_METALLIC(TEXT("Has Metallic"));
@@ -173,6 +174,43 @@ namespace
 		Texture->Source.Init(Size, Size, 1, 1, TSF_BGRA8, Pixels.GetData());
 		Texture->CompressionSettings = Compression;
 		Texture->SRGB = bSRGB;
+		Texture->UpdateResource();
+		Texture->PostEditChange();
+		Texture->MarkPackageDirty();
+		FAssetRegistryModule::AssetCreated(Texture);
+		return Texture;
+	}
+
+	/** Deterministic low-frequency grayscale noise for macro variation (users can swap it per instance). */
+	UTexture2D* GetOrCreateNoiseTexture(const FString& Name, const FString& PackagePath)
+	{
+		const FString ObjectPath = FString::Printf(TEXT("%s/%s.%s"), *PackagePath, *Name, *Name);
+		if (UTexture2D* Existing = LoadObject<UTexture2D>(nullptr, *ObjectPath))
+		{
+			return Existing;
+		}
+		UPackage* Package = CreatePackage(*(PackagePath / Name));
+		if (!Package)
+		{
+			return nullptr;
+		}
+		UTexture2D* Texture = NewObject<UTexture2D>(Package, FName(*Name), RF_Public | RF_Standalone);
+
+		const int32 Size = 32; // bilinear magnification turns per-pixel noise into soft blobs
+		FRandomStream Rand(1337);
+		TArray<uint8> Pixels;
+		Pixels.SetNumUninitialized(Size * Size * 4);
+		for (int32 i = 0; i < Size * Size; ++i)
+		{
+			const uint8 Gray = static_cast<uint8>(Rand.RandRange(48, 208));
+			Pixels[i * 4 + 0] = Gray;
+			Pixels[i * 4 + 1] = Gray;
+			Pixels[i * 4 + 2] = Gray;
+			Pixels[i * 4 + 3] = 255;
+		}
+		Texture->Source.Init(Size, Size, 1, 1, TSF_BGRA8, Pixels.GetData());
+		Texture->CompressionSettings = TC_Grayscale;
+		Texture->SRGB = false;
 		Texture->UpdateResource();
 		Texture->PostEditChange();
 		Texture->MarkPackageDirty();
@@ -372,17 +410,20 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 	Wire(ContrastPow, Tinted->A);
 	Wire(Tint, Tinted->B);
 
-	// Macro variation: re-sample base color at low frequency; its luminance breaks visible tiling.
-	auto* MacroScale = MakeScalar(TEXT("Macro Variation Scale"), 0.05f, -1250, -700);
+	// Macro variation: dedicated low-frequency noise texture breaks visible tiling.
+	// Swap the map or tune the scale per instance; needs a linear grayscale texture.
+	UTexture2D* MacroNoise = GetOrCreateNoiseTexture(TEXT("T_PoliigonDefault_MacroNoise"), CorePath);
+	SavePackageFor(MacroNoise);
+	auto* MacroScale = MakeScalar(TEXT("Macro Variation Scale"), 0.25f, -1250, -700);
 	auto* MacroUV = NewExpression<UMaterialExpressionMultiply>(Material, -1100, -650);
 	Wire(UVScaled, MacroUV->A);
 	Wire(MacroScale, MacroUV->B);
 	auto* MacroSample = NewExpression<UMaterialExpressionTextureSampleParameter2D>(Material, -950, -700);
-	MacroSample->ParameterName = PARAM_BASECOLOR; // same parameter, follows the instance override
-	MacroSample->SamplerType = SAMPLERTYPE_Color;
-	if (WhiteTex)
+	MacroSample->ParameterName = PARAM_MACRO_MAP;
+	MacroSample->SamplerType = SAMPLERTYPE_LinearGrayscale;
+	if (MacroNoise)
 	{
-		MacroSample->Texture = WhiteTex;
+		MacroSample->Texture = MacroNoise;
 	}
 	Wire(MacroUV, MacroSample->Coordinates);
 	auto* MacroGray = NewExpression<UMaterialExpressionDesaturation>(Material, -800, -690);
