@@ -189,13 +189,18 @@ namespace
 		{
 			return false;
 		}
+		// The library matches pins by their *display* name, which for many single-input
+		// nodes (Desaturation, Normalize, OneMinus, ...) is blank — so after the requested
+		// name and known aliases, always fall back to "Input" and finally "".
 		TArray<FString> Candidates;
-		Candidates.Add(InputName);
 		const FString Name(InputName);
-		if (Name == TEXT("True")) { Candidates.Add(TEXT("A")); }
-		else if (Name == TEXT("False")) { Candidates.Add(TEXT("B")); }
-		else if (Name == TEXT("UVs")) { Candidates.Add(TEXT("Coordinates")); }
-		else if (Name.IsEmpty()) { Candidates.Add(TEXT("Input")); }
+		Candidates.AddUnique(Name);
+		if (Name == TEXT("True")) { Candidates.AddUnique(TEXT("A")); }
+		else if (Name == TEXT("False")) { Candidates.AddUnique(TEXT("B")); }
+		else if (Name == TEXT("UVs")) { Candidates.AddUnique(TEXT("Coordinates")); }
+		else if (Name == TEXT("Exponent")) { Candidates.AddUnique(TEXT("Exp")); }
+		Candidates.AddUnique(TEXT("Input"));
+		Candidates.AddUnique(TEXT(""));
 		for (const FString& Candidate : Candidates)
 		{
 			if (UMaterialEditingLibrary::ConnectMaterialExpressions(From, TEXT(""), To, Candidate))
@@ -203,6 +208,8 @@ namespace
 				return true;
 			}
 		}
+		UE_LOG(LogPoliigonIngest, Warning, TEXT("Master graph: failed to connect %s -> %s (\"%s\")"),
+			*From->GetName(), *To->GetName(), InputName);
 		return false;
 	}
 }
