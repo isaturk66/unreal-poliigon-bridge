@@ -201,9 +201,12 @@ namespace
 			return false;
 		}
 		FStructProperty* Prop = FindFProperty<FStructProperty>(To->GetClass(), PropertyName);
-		if (!Prop || Prop->Struct != FExpressionInput::StaticStruct())
+		// FExpressionInput is a noexport struct (no StaticStruct()); match by name and
+		// accept the FMaterialInput<T> variants, which share the FExpressionInput layout.
+		const FString StructName = (Prop && Prop->Struct) ? Prop->Struct->GetName() : FString();
+		if (StructName != TEXT("ExpressionInput") && !StructName.EndsWith(TEXT("MaterialInput")))
 		{
-			UE_LOG(LogPoliigonIngest, Warning, TEXT("Master graph: no FExpressionInput property '%s' on %s"),
+			UE_LOG(LogPoliigonIngest, Warning, TEXT("Master graph: no expression-input property '%s' on %s"),
 				PropertyName, *To->GetClass()->GetName());
 			return false;
 		}
