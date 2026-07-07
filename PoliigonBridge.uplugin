@@ -1,0 +1,25 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "Poliigon Bridge",
+	"Description": "Browse Poliigon, one-click download and auto-ingest materials (as Substrate material instances) and models into /Content/Poliigon. Unofficial, GPL-licensed; API layer derived from the GPL Poliigon Blender addon.",
+	"Category": "Content",
+	"CreatedBy": "Paraltera",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": true,
+	"Modules": [
+		{
+			"Name": "PoliigonBridge",
+			"Type": "Editor",
+			"LoadingPhase": "PostEngineInit",
+			"PlatformAllowList": [ "Win64", "Mac", "Linux" ]
+		}
+	]
+}
