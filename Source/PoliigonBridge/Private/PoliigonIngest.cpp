@@ -36,6 +36,7 @@
 #include "Engine/StaticMesh.h"
 #include "SceneTypes.h"
 #include "UObject/SavePackage.h"
+#include "UObject/UnrealType.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopedSlowTask.h"
@@ -179,40 +180,6 @@ namespace
 		return Texture;
 	}
 
-	/**
-	 * Connects two expressions, tolerating pin-name differences across engine versions
-	 * (display names vs. property names, e.g. "True"/"A", "UVs"/"Coordinates").
-	 */
-	bool ConnectExpr(UMaterialExpression* From, UMaterialExpression* To, const TCHAR* InputName)
-	{
-		if (!From || !To)
-		{
-			return false;
-		}
-		// The library matches pins by their *display* name, which for many single-input
-		// nodes (Desaturation, Normalize, OneMinus, ...) is blank — so after the requested
-		// name and known aliases, always fall back to "Input" and finally "".
-		TArray<FString> Candidates;
-		const FString Name(InputName);
-		Candidates.AddUnique(Name);
-		if (Name == TEXT("True")) { Candidates.AddUnique(TEXT("A")); }
-		else if (Name == TEXT("False")) { Candidates.AddUnique(TEXT("B")); }
-		else if (Name == TEXT("UVs")) { Candidates.AddUnique(TEXT("Coordinates")); }
-		else if (Name == TEXT("Exponent")) { Candidates.AddUnique(TEXT("Exp")); }
-		Candidates.AddUnique(TEXT("Input"));
-		Candidates.AddUnique(TEXT(""));
-		for (const FString& Candidate : Candidates)
-		{
-			if (UMaterialEditingLibrary::ConnectMaterialExpressions(From, TEXT(""), To, Candidate))
-			{
-				return true;
-			}
-		}
-		UE_LOG(LogPoliigonIngest, Warning, TEXT("Master graph: failed to connect %s -> %s (\"%s\")"),
-			*From->GetName(), *To->GetName(), InputName);
-		return false;
-	}
-
 	/** Deterministic wiring via the typed input member — no pin-name matching. */
 	void Wire(UMaterialExpression* From, FExpressionInput& Input)
 	{
@@ -220,6 +187,28 @@ namespace
 		{
 			Input.Connect(0, From);
 		}
+	}
+
+	/**
+	 * Wires an input on an expression whose C++ type is only known at runtime
+	 * (the Substrate slab) by looking up the FExpressionInput UPROPERTY by its
+	 * *property* name — stable API, unlike editor pin display names.
+	 */
+	bool WireByProp(UMaterialExpression* From, UMaterialExpression* To, const TCHAR* PropertyName)
+	{
+		if (!From || !To)
+		{
+			return false;
+		}
+		FStructProperty* Prop = FindFProperty<FStructProperty>(To->GetClass(), PropertyName);
+		if (!Prop || Prop->Struct != FExpressionInput::StaticStruct())
+		{
+			UE_LOG(LogPoliigonIngest, Warning, TEXT("Master graph: no FExpressionInput property '%s' on %s"),
+				PropertyName, *To->GetClass()->GetName());
+			return false;
+		}
+		Prop->ContainerPtrToValuePtr<FExpressionInput>(To)->Connect(0, From);
+		return true;
 	}
 }
 
@@ -510,11 +499,11 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 			Wire(Metallic, F0->Alpha);
 
 			bool bAllConnected = true;
-			bAllConnected &= ConnectExpr(DiffuseAlbedo, Slab, TEXT("DiffuseAlbedo"));
-			bAllConnected &= ConnectExpr(F0, Slab, TEXT("F0"));
-			bAllConnected &= ConnectExpr(RoughFinal, Slab, TEXT("Roughness"));
-			bAllConnected &= ConnectExpr(NormalFinal, Slab, TEXT("Normal"));
-			ConnectExpr(Emissive, Slab, TEXT("EmissiveColor"));
+			bAllConnected &= WireByProp(DiffuseAlbedo, Slab, TEXT("DiffuseAlbedo"));
+			bAllConnected &= WireByProp(F0, Slab, TEXT("F0"));
+			bAllConnected &= WireByProp(RoughFinal, Slab, TEXT("Roughness"));
+			bAllConnected &= WireByProp(NormalFinal, Slab, TEXT("Normal"));
+			WireByProp(Emissive, Slab, TEXT("EmissiveColor"));
 
 			if (bAllConnected && ELib::ConnectMaterialProperty(Slab, TEXT(""), MP_FrontMaterial))
 			{
