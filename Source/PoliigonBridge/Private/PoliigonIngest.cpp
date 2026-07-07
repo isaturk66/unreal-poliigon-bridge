@@ -32,6 +32,7 @@
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionNormalize.h"
+#include "Materials/MaterialExpressionMax.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialExpressionFunctionInput.h"
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
@@ -660,6 +661,12 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 	auto* OneMinusTrans = NewExpression<UMaterialExpressionOneMinus>(Material, -780, 1780);
 	Wire(TransMul, OneMinusTrans->Input);
 	auto* OpacityValue = MakeSwitch(SWITCH_HAS_TRANSMISSION, -600, 1740, OneMinusTrans, Const1);
+	// Keep translucent surfaces from vanishing entirely: glass retains some
+	// presence/specular even where the transmission map is fully white.
+	auto* MinOpacity = MakeScalar(TEXT("Glass Min Opacity"), 0.3f, -600, 1830);
+	auto* OpacityFinal = NewExpression<UMaterialExpressionMax>(Material, -420, 1760);
+	Wire(OpacityValue, OpacityFinal->A);
+	Wire(MinOpacity, OpacityFinal->B);
 	Material->TranslucencyLightingMode = TLM_SurfacePerPixelLighting;
 
 	// --- Try an explicit Substrate slab first ---------------------------------
@@ -690,7 +697,23 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 			bAllConnected &= WireByProp(NormalFinal, Slab, TEXT("Normal"));
 			WireByProp(Emissive, Slab, TEXT("EmissiveColor"));
 
-			if (bAllConnected && ELib::ConnectMaterialProperty(Slab, TEXT(""), MP_FrontMaterial))
+			// Substrate ignores MP_Opacity: translucency needs a coverage weight
+			// wrapping the slab, driven by the transmission-based opacity chain.
+			UMaterialExpression* FrontExpression = Slab;
+			if (UClass* WeightClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.MaterialExpressionSubstrateWeight")))
+			{
+				if (UMaterialExpression* Weight = ELib::CreateMaterialExpression(Material, WeightClass))
+				{
+					Weight->MaterialExpressionEditorX = -60;
+					Weight->MaterialExpressionEditorY = 0;
+					if (WireByProp(Slab, Weight, TEXT("A")) && WireByProp(OpacityFinal, Weight, TEXT("Weight")))
+					{
+						FrontExpression = Weight;
+					}
+				}
+			}
+
+			if (bAllConnected && ELib::ConnectMaterialProperty(FrontExpression, TEXT(""), MP_FrontMaterial))
 			{
 				ELib::ConnectMaterialProperty(AOFinal, TEXT(""), MP_AmbientOcclusion);
 				ELib::ConnectMaterialProperty(OpacityMask, TEXT(""), MP_OpacityMask);
@@ -722,8 +745,8 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 	// Tessellation on this material + Nanite meshes to see real displacement.
 	ELib::ConnectMaterialProperty(Displacement, TEXT(""), MP_Displacement);
 
-	// Translucent opacity (both paths); only used by instances overridden to BLEND_Translucent.
-	ELib::ConnectMaterialProperty(OpacityValue, TEXT(""), MP_Opacity);
+	// Translucent opacity (legacy path); only used by instances overridden to BLEND_Translucent.
+	ELib::ConnectMaterialProperty(OpacityFinal, TEXT(""), MP_Opacity);
 
 	return true;
 }
