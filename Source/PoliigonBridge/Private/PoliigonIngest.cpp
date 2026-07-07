@@ -212,6 +212,15 @@ namespace
 			*From->GetName(), *To->GetName(), InputName);
 		return false;
 	}
+
+	/** Deterministic wiring via the typed input member — no pin-name matching. */
+	void Wire(UMaterialExpression* From, FExpressionInput& Input)
+	{
+		if (From)
+		{
+			Input.Connect(0, From);
+		}
+	}
 }
 
 // --- Master material ----------------------------------------------------------
@@ -268,8 +277,8 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 		auto* Switch = NewExpression<UMaterialExpressionStaticSwitchParameter>(Material, X, Y);
 		Switch->ParameterName = Name;
 		Switch->DefaultValue = false;
-		ConnectExpr(True, Switch, TEXT("True"));
-		ConnectExpr(False, Switch, TEXT("False"));
+		Wire(True, Switch->A);
+		Wire(False, Switch->B);
 		return Switch;
 	};
 
@@ -278,11 +287,11 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 	auto* WorldPos = NewExpression<UMaterialExpressionWorldPosition>(Material, -2700, 130);
 	auto* WorldXY = NewExpression<UMaterialExpressionComponentMask>(Material, -2550, 130);
 	WorldXY->R = 1; WorldXY->G = 1; WorldXY->B = 0; WorldXY->A = 0;
-	ConnectExpr(WorldPos, WorldXY, TEXT(""));
+	Wire(WorldPos, WorldXY->Input);
 	auto* WorldTileSize = MakeScalar(TEXT("World Tile Size (cm)"), 100.0f, -2700, 260);
 	auto* WorldUV = NewExpression<UMaterialExpressionDivide>(Material, -2400, 150);
-	ConnectExpr(WorldXY, WorldUV, TEXT("A"));
-	ConnectExpr(WorldTileSize, WorldUV, TEXT("B"));
+	Wire(WorldXY, WorldUV->A);
+	Wire(WorldTileSize, WorldUV->B);
 	// Top-down planar projection — ideal for floors and large tiling surfaces.
 	auto* UVSource = MakeSwitch(SWITCH_WORLD_UV, -2250, 40, WorldUV, UV);
 
@@ -291,26 +300,26 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 	UVRotator->CenterX = 0.5f;
 	UVRotator->CenterY = 0.5f;
 	UVRotator->Speed = 6.2831853f; // one turn per unit
-	ConnectExpr(UVSource, UVRotator, TEXT("Coordinate"));
-	ConnectExpr(RotationParam, UVRotator, TEXT("Time"));
+	Wire(UVSource, UVRotator->Coordinate);
+	Wire(RotationParam, UVRotator->Time);
 
 	auto* TilingX = MakeScalar(TEXT("Tiling X"), 1.0f, -2050, 220);
 	auto* TilingY = MakeScalar(TEXT("Tiling Y"), 1.0f, -2050, 300);
 	auto* TilingVec = NewExpression<UMaterialExpressionAppendVector>(Material, -1900, 240);
-	ConnectExpr(TilingX, TilingVec, TEXT("A"));
-	ConnectExpr(TilingY, TilingVec, TEXT("B"));
+	Wire(TilingX, TilingVec->A);
+	Wire(TilingY, TilingVec->B);
 	auto* UVTiled = NewExpression<UMaterialExpressionMultiply>(Material, -1780, 100);
-	ConnectExpr(UVRotator, UVTiled, TEXT("A"));
-	ConnectExpr(TilingVec, UVTiled, TEXT("B"));
+	Wire(UVRotator, UVTiled->A);
+	Wire(TilingVec, UVTiled->B);
 
 	auto* OffsetX = MakeScalar(TEXT("Offset X"), 0.0f, -1780, 260);
 	auto* OffsetY = MakeScalar(TEXT("Offset Y"), 0.0f, -1780, 340);
 	auto* OffsetVec = NewExpression<UMaterialExpressionAppendVector>(Material, -1650, 280);
-	ConnectExpr(OffsetX, OffsetVec, TEXT("A"));
-	ConnectExpr(OffsetY, OffsetVec, TEXT("B"));
+	Wire(OffsetX, OffsetVec->A);
+	Wire(OffsetY, OffsetVec->B);
 	auto* UVScaled = NewExpression<UMaterialExpressionAdd>(Material, -1520, 120);
-	ConnectExpr(UVTiled, UVScaled, TEXT("A"));
-	ConnectExpr(OffsetVec, UVScaled, TEXT("B"));
+	Wire(UVTiled, UVScaled->A);
+	Wire(OffsetVec, UVScaled->B);
 
 	UTexture* WhiteTex = LoadEngineTexture({ TEXT("/Engine/EngineResources/WhiteSquareTexture") });
 	UTexture* NormalTexDefault = LoadEngineTexture({
@@ -337,7 +346,7 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 		{
 			Param->Texture = Default;
 		}
-		ConnectExpr(UVScaled, Param, TEXT("UVs"));
+		Wire(UVScaled, Param->Coordinates);
 		return Param;
 	};
 
@@ -358,24 +367,24 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 	// ---- Base color grade: desaturate -> contrast -> tint (+ optional macro variation)
 	auto* DesatAmount = MakeScalar(TEXT("Desaturation"), 0.0f, -1050, -430);
 	auto* Desat = NewExpression<UMaterialExpressionDesaturation>(Material, -900, -360);
-	ConnectExpr(BaseColorTex, Desat, TEXT("Input"));
-	ConnectExpr(DesatAmount, Desat, TEXT("Fraction"));
+	Wire(BaseColorTex, Desat->Input);
+	Wire(DesatAmount, Desat->Fraction);
 	auto* ContrastParam = MakeScalar(TEXT("Contrast"), 1.0f, -900, -230);
 	auto* ContrastPow = NewExpression<UMaterialExpressionPower>(Material, -750, -330);
-	ConnectExpr(Desat, ContrastPow, TEXT("Base"));
-	ConnectExpr(ContrastParam, ContrastPow, TEXT("Exponent"));
+	Wire(Desat, ContrastPow->Base);
+	Wire(ContrastParam, ContrastPow->Exponent);
 	auto* Tint = NewExpression<UMaterialExpressionVectorParameter>(Material, -750, -190);
 	Tint->ParameterName = TEXT("Tint");
 	Tint->DefaultValue = FLinearColor::White;
 	auto* Tinted = NewExpression<UMaterialExpressionMultiply>(Material, -600, -310);
-	ConnectExpr(ContrastPow, Tinted, TEXT("A"));
-	ConnectExpr(Tint, Tinted, TEXT("B"));
+	Wire(ContrastPow, Tinted->A);
+	Wire(Tint, Tinted->B);
 
 	// Macro variation: re-sample base color at low frequency; its luminance breaks visible tiling.
 	auto* MacroScale = MakeScalar(TEXT("Macro Variation Scale"), 0.05f, -1250, -700);
 	auto* MacroUV = NewExpression<UMaterialExpressionMultiply>(Material, -1100, -650);
-	ConnectExpr(UVScaled, MacroUV, TEXT("A"));
-	ConnectExpr(MacroScale, MacroUV, TEXT("B"));
+	Wire(UVScaled, MacroUV->A);
+	Wire(MacroScale, MacroUV->B);
 	auto* MacroSample = NewExpression<UMaterialExpressionTextureSampleParameter2D>(Material, -950, -700);
 	MacroSample->ParameterName = PARAM_BASECOLOR; // same parameter, follows the instance override
 	MacroSample->SamplerType = SAMPLERTYPE_Color;
@@ -383,23 +392,23 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 	{
 		MacroSample->Texture = WhiteTex;
 	}
-	ConnectExpr(MacroUV, MacroSample, TEXT("UVs"));
+	Wire(MacroUV, MacroSample->Coordinates);
 	auto* MacroGray = NewExpression<UMaterialExpressionDesaturation>(Material, -800, -690);
-	ConnectExpr(MacroSample, MacroGray, TEXT("Input"));
-	ConnectExpr(Const1, MacroGray, TEXT("Fraction"));
+	Wire(MacroSample, MacroGray->Input);
+	Wire(Const1, MacroGray->Fraction);
 	auto* Const2 = NewExpression<UMaterialExpressionConstant>(Material, -800, -590);
 	Const2->R = 2.0f;
 	auto* MacroX2 = NewExpression<UMaterialExpressionMultiply>(Material, -680, -660);
-	ConnectExpr(MacroGray, MacroX2, TEXT("A"));
-	ConnectExpr(Const2, MacroX2, TEXT("B"));
+	Wire(MacroGray, MacroX2->A);
+	Wire(Const2, MacroX2->B);
 	auto* MacroIntensity = MakeScalar(TEXT("Macro Variation Intensity"), 0.5f, -680, -560);
 	auto* MacroFactor = NewExpression<UMaterialExpressionLinearInterpolate>(Material, -540, -630);
 	MacroFactor->ConstA = 1.0f;
-	ConnectExpr(MacroX2, MacroFactor, TEXT("B"));
-	ConnectExpr(MacroIntensity, MacroFactor, TEXT("Alpha"));
+	Wire(MacroX2, MacroFactor->B);
+	Wire(MacroIntensity, MacroFactor->Alpha);
 	auto* MacroMul = NewExpression<UMaterialExpressionMultiply>(Material, -420, -420);
-	ConnectExpr(Tinted, MacroMul, TEXT("A"));
-	ConnectExpr(MacroFactor, MacroMul, TEXT("B"));
+	Wire(Tinted, MacroMul->A);
+	Wire(MacroFactor, MacroMul->B);
 	auto* BaseFinal = MakeSwitch(SWITCH_MACRO, -280, -370, MacroMul, Tinted);
 
 	// ---- Normal strength: lerp toward flat, renormalize
@@ -407,49 +416,49 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 	auto* FlatNormal = NewExpression<UMaterialExpressionConstant3Vector>(Material, -1050, -40);
 	FlatNormal->Constant = FLinearColor(0.0f, 0.0f, 1.0f);
 	auto* NormalLerp = NewExpression<UMaterialExpressionLinearInterpolate>(Material, -880, -90);
-	ConnectExpr(FlatNormal, NormalLerp, TEXT("A"));
-	ConnectExpr(NormalTex, NormalLerp, TEXT("B"));
-	ConnectExpr(NormalStrength, NormalLerp, TEXT("Alpha"));
+	Wire(FlatNormal, NormalLerp->A);
+	Wire(NormalTex, NormalLerp->B);
+	Wire(NormalStrength, NormalLerp->Alpha);
 	auto* NormalFinal = NewExpression<UMaterialExpressionNormalize>(Material, -720, -90);
-	ConnectExpr(NormalLerp, NormalFinal, TEXT("VectorInput"));
+	Wire(NormalLerp, NormalFinal->VectorInput);
 
 	// Roughness = UseORM ? ORM.G : (Invert ? 1-Rough : Rough)
 	auto* OneMinusRough = NewExpression<UMaterialExpressionOneMinus>(Material, -1000, 300);
-	ConnectExpr(RoughTex, OneMinusRough, TEXT(""));
+	Wire(RoughTex, OneMinusRough->Input);
 	auto* SwInvertRough = MakeSwitch(SWITCH_INVERT_ROUGH, -800, 300, OneMinusRough, RoughTex);
 	auto* OrmG = NewExpression<UMaterialExpressionComponentMask>(Material, -1000, 150);
 	OrmG->R = 0; OrmG->G = 1; OrmG->B = 0; OrmG->A = 0;
-	ConnectExpr(OrmTex, OrmG, TEXT(""));
+	Wire(OrmTex, OrmG->Input);
 	auto* Roughness = MakeSwitch(SWITCH_USE_ORM, -600, 250, OrmG, SwInvertRough);
 
 	// Roughness remap: lerp(Min, Max, roughness) — defaults are passthrough.
 	auto* RoughMin = MakeScalar(TEXT("Roughness Min"), 0.0f, -600, 340);
 	auto* RoughMax = MakeScalar(TEXT("Roughness Max"), 1.0f, -600, 410);
 	auto* RoughFinal = NewExpression<UMaterialExpressionLinearInterpolate>(Material, -420, 300);
-	ConnectExpr(RoughMin, RoughFinal, TEXT("A"));
-	ConnectExpr(RoughMax, RoughFinal, TEXT("B"));
-	ConnectExpr(Roughness, RoughFinal, TEXT("Alpha"));
+	Wire(RoughMin, RoughFinal->A);
+	Wire(RoughMax, RoughFinal->B);
+	Wire(Roughness, RoughFinal->Alpha);
 
 	// Metallic = UseORM ? ORM.B : (HasMetallic ? Metal : 0)
 	auto* SwHasMetal = MakeSwitch(SWITCH_HAS_METALLIC, -800, 500, MetalTex, Const0);
 	auto* OrmB = NewExpression<UMaterialExpressionComponentMask>(Material, -1000, 550);
 	OrmB->R = 0; OrmB->G = 0; OrmB->B = 1; OrmB->A = 0;
-	ConnectExpr(OrmTex, OrmB, TEXT(""));
+	Wire(OrmTex, OrmB->Input);
 	auto* Metallic = MakeSwitch(SWITCH_USE_ORM, -600, 500, OrmB, SwHasMetal);
 
 	// AO = UseORM ? ORM.R : (HasAO ? AO : 1)
 	auto* SwHasAO = MakeSwitch(SWITCH_HAS_AO, -800, 700, AOTex, Const1);
 	auto* OrmR = NewExpression<UMaterialExpressionComponentMask>(Material, -1000, 750);
 	OrmR->R = 1; OrmR->G = 0; OrmR->B = 0; OrmR->A = 0;
-	ConnectExpr(OrmTex, OrmR, TEXT(""));
+	Wire(OrmTex, OrmR->Input);
 	auto* AO = MakeSwitch(SWITCH_USE_ORM, -600, 700, OrmR, SwHasAO);
 
 	// AO intensity: lerp(1, AO, intensity)
 	auto* AOIntensity = MakeScalar(TEXT("AO Intensity"), 1.0f, -600, 790);
 	auto* AOFinal = NewExpression<UMaterialExpressionLinearInterpolate>(Material, -420, 700);
-	ConnectExpr(Const1, AOFinal, TEXT("A"));
-	ConnectExpr(AO, AOFinal, TEXT("B"));
-	ConnectExpr(AOIntensity, AOFinal, TEXT("Alpha"));
+	Wire(Const1, AOFinal->A);
+	Wire(AO, AOFinal->B);
+	Wire(AOIntensity, AOFinal->Alpha);
 
 	// Emissive = HasEmission ? Emis * EmissiveTint * Strength : 0
 	auto* EmisStrength = MakeScalar(TEXT("Emission Strength"), 1.0f, -1050, 980);
@@ -457,11 +466,11 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 	EmissiveTint->ParameterName = TEXT("Emissive Tint");
 	EmissiveTint->DefaultValue = FLinearColor::White;
 	auto* EmisTintMul = NewExpression<UMaterialExpressionMultiply>(Material, -900, 920);
-	ConnectExpr(EmisTex, EmisTintMul, TEXT("A"));
-	ConnectExpr(EmissiveTint, EmisTintMul, TEXT("B"));
+	Wire(EmisTex, EmisTintMul->A);
+	Wire(EmissiveTint, EmisTintMul->B);
 	auto* EmisMul = NewExpression<UMaterialExpressionMultiply>(Material, -780, 900);
-	ConnectExpr(EmisTintMul, EmisMul, TEXT("A"));
-	ConnectExpr(EmisStrength, EmisMul, TEXT("B"));
+	Wire(EmisTintMul, EmisMul->A);
+	Wire(EmisStrength, EmisMul->B);
 	auto* Emissive = MakeSwitch(SWITCH_HAS_EMISSION, -600, 900, EmisMul, Const0);
 
 	// OpacityMask = HasOpacity ? Opac : 1
@@ -473,8 +482,8 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 	auto* DispIntensity = MakeScalar(TEXT("Displacement Intensity"), 1.0f, -1050, 1500);
 	auto* DispAdj = NewExpression<UMaterialExpressionLinearInterpolate>(Material, -880, 1420);
 	DispAdj->ConstA = 0.5f;
-	ConnectExpr(DispTex, DispAdj, TEXT("B"));
-	ConnectExpr(DispIntensity, DispAdj, TEXT("Alpha"));
+	Wire(DispTex, DispAdj->B);
+	Wire(DispIntensity, DispAdj->Alpha);
 	auto* ConstHalf = NewExpression<UMaterialExpressionConstant>(Material, -880, 1560);
 	ConstHalf->R = 0.5f;
 	auto* Displacement = MakeSwitch(SWITCH_HAS_DISPLACEMENT, -600, 1440, DispAdj, ConstHalf);
@@ -491,14 +500,14 @@ bool FPoliigonIngest::BuildMasterGraph(UMaterial* Material)
 
 			// Metalness workflow -> slab: DiffuseAlbedo = Base*(1-M), F0 = lerp(0.04, Base, M)
 			auto* OneMinusMetal = NewExpression<UMaterialExpressionOneMinus>(Material, -450, 380);
-			ConnectExpr(Metallic, OneMinusMetal, TEXT(""));
+			Wire(Metallic, OneMinusMetal->Input);
 			auto* DiffuseAlbedo = NewExpression<UMaterialExpressionMultiply>(Material, -350, -250);
-			ConnectExpr(BaseFinal, DiffuseAlbedo, TEXT("A"));
-			ConnectExpr(OneMinusMetal, DiffuseAlbedo, TEXT("B"));
+			Wire(BaseFinal, DiffuseAlbedo->A);
+			Wire(OneMinusMetal, DiffuseAlbedo->B);
 			auto* F0 = NewExpression<UMaterialExpressionLinearInterpolate>(Material, -350, -120);
 			F0->ConstA = 0.04f;
-			ConnectExpr(BaseFinal, F0, TEXT("B"));
-			ConnectExpr(Metallic, F0, TEXT("Alpha"));
+			Wire(BaseFinal, F0->B);
+			Wire(Metallic, F0->Alpha);
 
 			bool bAllConnected = true;
 			bAllConnected &= ConnectExpr(DiffuseAlbedo, Slab, TEXT("DiffuseAlbedo"));
